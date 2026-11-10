@@ -7,7 +7,7 @@ name = "xmcam-fs"
 version = "0.1.0"
 description = "Mount a Xiongmai / iCSee / XMeye IP camera as a FUSE filesystem and browse its recordings as files (MP4 or raw), sshfs-style. No cloud."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "theundefined", email = "undefine@aramin.net" }]
@@ -59,11 +59,11 @@ addopts = "-q"
 
 [tool.black]
 line-length = 120
-target-version = ["py39"]
+target-version = ["py310"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
