@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# FUSE cache / downloaded footage (never commit)
+*.xmraw
+*.mp4
+cache/
+.xmcam-cache/
+mnt/
+mountpoint/
+
+# Local secrets / scratch
+.env
+secrets.*
+_scratch/
