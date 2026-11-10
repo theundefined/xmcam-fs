@@ -9,18 +9,14 @@ MB49 = 49 * 1024 * 1024
 
 
 def make_rec(filename, begin, end, length=MB49):
-    return Recording(filename=filename, begin_time=begin, end_time=end,
-                     length_bytes=length)
+    return Recording(filename=filename, begin_time=begin, end_time=end, length_bytes=length)
 
 
 def sample_recordings():
     return [
-        make_rec("a.dav", datetime(2026, 11, 10, 8, 0, 0),
-                 datetime(2026, 11, 10, 8, 5, 0)),
-        make_rec("b.dav", datetime(2026, 11, 10, 9, 0, 0),
-                 datetime(2026, 11, 10, 9, 5, 0)),
-        make_rec("c.dav", datetime(2026, 11, 11, 7, 30, 0),
-                 datetime(2026, 11, 11, 7, 45, 0)),
+        make_rec("a.dav", datetime(2026, 11, 10, 8, 0, 0), datetime(2026, 11, 10, 8, 5, 0)),
+        make_rec("b.dav", datetime(2026, 11, 10, 9, 0, 0), datetime(2026, 11, 10, 9, 5, 0)),
+        make_rec("c.dav", datetime(2026, 11, 11, 7, 30, 0), datetime(2026, 11, 11, 7, 45, 0)),
     ]
 
 
@@ -88,10 +84,8 @@ def test_lookup_and_get():
 
 def test_duplicate_basenames_are_disambiguated():
     recs = [
-        make_rec("first.dav", datetime(2026, 11, 10, 8, 0, 0),
-                 datetime(2026, 11, 10, 8, 5, 0)),
-        make_rec("second.dav", datetime(2026, 11, 10, 8, 0, 0),
-                 datetime(2026, 11, 10, 8, 5, 0)),
+        make_rec("first.dav", datetime(2026, 11, 10, 8, 0, 0), datetime(2026, 11, 10, 8, 5, 0)),
+        make_rec("second.dav", datetime(2026, 11, 10, 8, 0, 0), datetime(2026, 11, 10, 8, 5, 0)),
     ]
     tree = FsTree.from_recordings(recs)
     date = tree.lookup(ROOT_INODE, "2026-11-10")
@@ -119,16 +113,14 @@ def test_missing_end_time_uses_begin_time():
 def test_recording_without_begin_time_is_skipped():
     recs = [
         make_rec("no_begin.dav", None, datetime(2026, 11, 10, 8, 5, 0)),
-        make_rec("ok.dav", datetime(2026, 11, 10, 8, 0, 0),
-                 datetime(2026, 11, 10, 8, 5, 0)),
+        make_rec("ok.dav", datetime(2026, 11, 10, 8, 0, 0), datetime(2026, 11, 10, 8, 5, 0)),
     ]
     tree = FsTree.from_recordings(recs)
     date = tree.lookup(ROOT_INODE, "2026-11-10")
     mp4 = tree.lookup(date.inode, "mp4")
     assert child_names(tree, mp4.inode) == ["08.00.00-08.05.00.mp4"]
 
-    only_none = FsTree.from_recordings(
-        [make_rec("gone.dav", None, None)])
+    only_none = FsTree.from_recordings([make_rec("gone.dav", None, None)])
     assert child_names(only_none, ROOT_INODE) == []
 
 

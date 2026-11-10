@@ -5,6 +5,7 @@ produced exactly once and then read straight off disk. Because a Xiongmai camera
 has a single playback channel, downloads are serialised with one lock -- running
 two ``OPPlayBack`` sessions at once provokes ``Ret 103``.
 """
+
 from __future__ import annotations
 
 import threading
@@ -82,9 +83,7 @@ class SegmentCache:
 
     # -- internals ------------------------------------------------------------
     def _client(self) -> DVRIPClient:
-        cam = DVRIPClient(
-            self.host, user=self.creds.username, password=self.creds.password, port=self.port
-        )
+        cam = DVRIPClient(self.host, user=self.creds.username, password=self.creds.password, port=self.port)
         cam.login_or_raise()
         return cam
 

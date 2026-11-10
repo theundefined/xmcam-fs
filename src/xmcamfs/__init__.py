@@ -8,6 +8,7 @@ the :mod:`xmcam` library. Each recording appears twice:
 
 The filesystem is read-only and talks only to the local network - no cloud.
 """
+
 from __future__ import annotations
 
 __version__ = "0.1.0"

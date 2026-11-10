@@ -8,6 +8,7 @@ Credentials come from ``--user/--password`` or ``XMCAM_USER``/``XMCAM_PASS``;
 if absent they are recovered from anonymous ONVIF (the trick the iCSee app uses),
 which only works on cameras you own.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -117,9 +118,7 @@ def main(argv=None) -> None:
     log.info("indexed %d recording(s)", len(recordings))
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir(args.host)
-    cache = SegmentCache(
-        args.host, creds, cache_dir, port=args.port, channel=args.channel, stream=args.stream
-    )
+    cache = SegmentCache(args.host, creds, cache_dir, port=args.port, channel=args.channel, stream=args.stream)
 
     fs = CameraFs(tree, cache)
     fuse_options = set(pyfuse3.default_options)

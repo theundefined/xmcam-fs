@@ -5,6 +5,7 @@ contents are produced on demand by :class:`~xmcamfs.cache.SegmentCache`. The
 slow work (downloading and converting a segment) happens on ``open`` in a worker
 thread, so ``ls`` stays instant and the trio event loop never blocks.
 """
+
 from __future__ import annotations
 
 import errno
@@ -106,9 +107,7 @@ class CameraFs(pyfuse3.Operations):
         children = self.tree.list_children(inode)
         for idx in range(start_id, len(children)):
             node = children[idx]
-            if not pyfuse3.readdir_reply(
-                token, os.fsencode(node.name), self._attr(node), idx + 1
-            ):
+            if not pyfuse3.readdir_reply(token, os.fsencode(node.name), self._attr(node), idx + 1):
                 break
 
     async def releasedir(self, fh):

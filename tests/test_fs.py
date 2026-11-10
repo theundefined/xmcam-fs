@@ -3,6 +3,7 @@
 The async handlers are driven directly with trio; only getattr/lookup are
 exercised, since readdir/open need kernel-supplied tokens/fds.
 """
+
 from __future__ import annotations
 
 import errno

@@ -1,4 +1,5 @@
 """Offline tests for SegmentCache (download/convert are mocked, no network)."""
+
 from __future__ import annotations
 
 from datetime import datetime

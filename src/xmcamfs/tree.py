@@ -31,15 +31,15 @@ _EXTENSIONS = {VIEW_MP4: ".mp4", VIEW_RAW: ".xmraw"}
 @dataclass
 class Node:
     inode: int
-    name: str                      # basename (ascii-safe)
-    kind: str                      # "root" | "date" | "view" | "file"
+    name: str  # basename (ascii-safe)
+    kind: str  # "root" | "date" | "view" | "file"
     parent: int
     is_dir: bool
-    children: dict = field(default_factory=dict)   # name -> inode (dirs only)
-    recording: Optional[Recording] = None          # file nodes only
-    view: Optional[str] = None                      # "mp4" | "raw"
-    size: int = 0                                   # bytes (file nodes)
-    mtime: float = 0.0                              # epoch seconds
+    children: dict = field(default_factory=dict)  # name -> inode (dirs only)
+    recording: Optional[Recording] = None  # file nodes only
+    view: Optional[str] = None  # "mp4" | "raw"
+    size: int = 0  # bytes (file nodes)
+    mtime: float = 0.0  # epoch seconds
 
 
 def _base_name(rec: Recording) -> str:
@@ -77,8 +77,7 @@ class FsTree:
     """Read-only inode tree built from recordings."""
 
     def __init__(self) -> None:
-        root = Node(inode=ROOT_INODE, name="", kind="root",
-                    parent=ROOT_INODE, is_dir=True)
+        root = Node(inode=ROOT_INODE, name="", kind="root", parent=ROOT_INODE, is_dir=True)
         self._nodes: Dict[int, Node] = {ROOT_INODE: root}
         self._next_inode = ROOT_INODE + 1
 
@@ -104,16 +103,13 @@ class FsTree:
         self._next_inode += 1
         return inode
 
-    def _new_dir(self, parent: Node, name: str, kind: str,
-                 view: Optional[str] = None) -> Node:
-        node = Node(inode=self._alloc_inode(), name=name, kind=kind,
-                    parent=parent.inode, is_dir=True, view=view)
+    def _new_dir(self, parent: Node, name: str, kind: str, view: Optional[str] = None) -> Node:
+        node = Node(inode=self._alloc_inode(), name=name, kind=kind, parent=parent.inode, is_dir=True, view=view)
         self._nodes[node.inode] = node
         parent.children[name] = node.inode
         return node
 
-    def _new_file(self, parent: Node, name: str, rec: Recording,
-                  view: str) -> Node:
+    def _new_file(self, parent: Node, name: str, rec: Recording, view: str) -> Node:
         # mtime uses end_time (falling back to begin_time). Note: naive
         # datetimes are interpreted as local time by .timestamp().
         when = rec.end_time if rec.end_time is not None else rec.begin_time

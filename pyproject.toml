@@ -33,7 +33,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "ruff>=0.3.0",
+    "black>=24.0.0",
+    "mypy>=1.9.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/theundefined/xmcam-fs"
@@ -49,3 +56,17 @@ packages = ["src/xmcamfs"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.black]
+line-length = 120
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+ignore_missing_imports = true
