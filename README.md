@@ -35,15 +35,37 @@ No bespoke download command needed.
 
 ## Requirements
 
+`xmcam-fs` depends on `pyfuse3`, a C extension with **no prebuilt wheels**, so a
+few system packages must be present *before* you install:
+
 - Linux with FUSE 3 (`/dev/fuse`, `fusermount3`).
-- **`libfuse3-dev`** and `pkg-config` are needed to *build* `pyfuse3` (its only
-  non-Python dependency). On Debian/Ubuntu: `sudo apt install libfuse3-dev pkg-config`.
+- **`libfuse3-dev`** + `pkg-config` to build `pyfuse3`, and `fuse3` to mount.
+- A C toolchain and Python headers (`build-essential`, `python3-dev`) if not
+  already present.
 - `ffmpeg` for the `mp4/` view (the `raw/` view works without it).
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt install -y libfuse3-dev pkg-config fuse3 build-essential python3-dev
+```
 
 ## Install
 
 ```bash
 pipx install xmcam-fs        # or: pip install xmcam-fs
+```
+
+### Troubleshooting
+
+**`Package fuse3 was not found in the pkg-config search path` / `failed-wheel-build-for-install`**
+— `pyfuse3` can't find the libfuse3 development headers. Install them and retry:
+
+```bash
+sudo apt install -y libfuse3-dev pkg-config   # Debian/Ubuntu
+# Fedora: sudo dnf install fuse3-devel pkgconf-pkg-config
+# Arch:   sudo pacman -S fuse3 pkgconf
+pipx install xmcam-fs
 ```
 
 ## Usage
