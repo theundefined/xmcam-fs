@@ -9,7 +9,8 @@ Layout::
     /                             (root, inode ROOT_INODE)
       <YYYY-MM-DD>/               one directory per distinct begin date
         mp4/                      view directory
-          HH.MM.SS-HH.MM.SS.mp4   one file per recording on that day
+          HH.MM.SS-HH.MM.SS.mp4    a regular/continuous recording
+          HH.MM.SS-HH.MM.SS.M.mp4  a motion-triggered recording (".M" marker)
         raw/                      view directory
           HH.MM.SS-HH.MM.SS.xmraw
 """
@@ -43,9 +44,18 @@ class Node:
 
 
 def _base_name(rec: Recording) -> str:
-    """Return ``HH.MM.SS-HH.MM.SS`` for a recording (without extension)."""
+    """Return ``HH.MM.SS-HH.MM.SS`` for a recording (without extension).
+
+    Non-regular events are tagged so they stand out in a directory listing:
+    a motion clip becomes ``HH.MM.SS-HH.MM.SS.M`` (and e.g. ``.A`` for alarm),
+    while regular/continuous recordings are left unmarked.
+    """
     end = rec.end_time if rec.end_time is not None else rec.begin_time
-    return f"{rec.begin_time:%H.%M.%S}-{end:%H.%M.%S}"
+    base = f"{rec.begin_time:%H.%M.%S}-{end:%H.%M.%S}"
+    event = getattr(rec, "event", "")
+    if event and event != "R":
+        base += f".{event}"
+    return base
 
 
 def _assign_names(recs: List[Recording]) -> List[str]:

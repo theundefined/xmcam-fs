@@ -10,11 +10,11 @@ network: **no cloud, no internet.**
 mnt/
 └── 2026-11-10/
     ├── mp4/
-    │   ├── 08.00.00-08.05.00.mp4      # playable MP4, produced on first open
-    │   └── 08.05.00-08.09.17.mp4
+    │   ├── 08.00.00-08.05.00.mp4        # continuous recording
+    │   └── 08.09.17-08.09.34.M.mp4      # motion clip (".M" marker)
     └── raw/
-        ├── 08.00.00-08.05.00.xmraw    # original Xiongmai container
-        └── 08.05.00-08.09.17.xmraw
+        ├── 08.00.00-08.05.00.xmraw      # original Xiongmai container
+        └── 08.09.17-08.09.34.M.xmraw
 ```
 
 Each recording appears twice:
@@ -24,6 +24,9 @@ Each recording appears twice:
   cached — so the first read is slow (~2 min for a 5-minute segment on these
   cameras) and later reads are instant.
 - **`raw/`** — the original `.xmraw` container, exact size, no conversion cost.
+
+Motion-triggered clips are tagged with a **`.M`** marker in the file name, so
+motion stands out in a plain `ls` (and `ls *.M.mp4` lists just those).
 
 The filesystem is **read-only**.
 
