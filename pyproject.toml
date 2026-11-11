@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: System :: Filesystems",
 ]
 dependencies = [
-    "xmcam-py>=0.3.0",
+    "xmcam-py>=0.3.1",
     "pyfuse3>=3.2.0",
     "trio>=0.22",
 ]

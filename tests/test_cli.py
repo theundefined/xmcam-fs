@@ -4,7 +4,7 @@ from xmcamfs.cli import build_parser
 def test_defaults():
     args = build_parser().parse_args(["192.0.2.10", "mnt"])
     assert args.refresh == 60.0
-    assert args.cache_max_size == 100 * 1024**2
+    assert args.cache_max_size == 500 * 1024**2
     assert args.background is False
 
 

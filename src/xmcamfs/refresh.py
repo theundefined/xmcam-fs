@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Awaitable, Callable, Dict, Iterable, List, Optional
 
 import trio
 
@@ -37,6 +37,12 @@ RETRY_INTERVAL = 10.0
 #: seen unchanged twice) appears quickly on an idle camera.
 FIRST_INTERVAL = 15.0
 
+#: How often the whole ``--days`` window is re-listed to notice recordings the camera overwrote.
+FULL_EVERY = timedelta(minutes=15)
+#: A recording must be missing from this many consecutive full listings before it is removed
+#: (a truncated or glitchy reply must not make files flap).
+MISSING_LIMIT = 2
+
 #: ``fetch(start, end)`` -> recordings in that window; raises on any failure.
 Fetch = Callable[[datetime, datetime], List[Recording]]
 
@@ -50,6 +56,8 @@ class Refresher:
         interval: float = 60.0,
         days: int = 7,
         clock: Callable[[], datetime] = datetime.now,
+        full_every: timedelta = FULL_EVERY,
+        on_removed: Optional[Callable[[list], Awaitable[None]]] = None,
     ) -> None:
         self.tree = tree
         self.fetch = fetch
@@ -57,6 +65,10 @@ class Refresher:
         self.interval = interval
         self.days = days
         self._clock = clock
+        self.full_every = full_every
+        self.on_removed = on_removed  # async callback(list of (parent_inode, name, inode)) after pruning
+        self._last_full = clock()  # the mount-time listing counts as a full one
+        self._missing: Dict[tuple, int] = {}  # slot -> consecutive full listings without it
         self._pending: Dict[tuple, tuple] = {}  # slot -> (end_time, length) seen at the last refresh
         self._last_end: Optional[datetime] = None  # end of the newest settled segment
         self._wake = trio.Event()
@@ -106,10 +118,37 @@ class Refresher:
         except Exception:  # noqa: BLE001 - best-effort
             pass
 
-    def window(self) -> tuple:
+    def reconcile(self, recs: Iterable[Recording]) -> list:
+        """Drop recordings that a full listing no longer reports; returns removed entries.
+
+        The tree mirrors the last ``days`` days of the camera: footage the camera
+        overwrote, or that slid out of the window, disappears. A recording must be
+        absent from :data:`MISSING_LIMIT` consecutive full listings, and an empty
+        listing never removes anything.
+        """
+        present = {slot_key(r) for r in recs if r.begin_time is not None}
+        if not present:
+            return []
+        stale = []
+        known = self.tree.slot_keys()
+        for key in known:
+            if key in present:
+                self._missing.pop(key, None)
+                continue
+            self._missing[key] = self._missing.get(key, 0) + 1
+            if self._missing[key] >= MISSING_LIMIT:
+                stale.append(key)
+        self._missing = {k: v for k, v in self._missing.items() if k in set(known) and k not in stale}
+        if not stale:
+            return []
+        removed = self.tree.remove_slots(stale)
+        log.info("removed %d recording(s) no longer on the camera", len(stale))
+        return removed
+
+    def window(self, full: bool = False) -> tuple:
         now = self._clock()
         floor = now - timedelta(days=self.days)
-        start = floor if self._last_end is None else max(floor, self._last_end - OVERLAP)
+        start = floor if (full or self._last_end is None) else max(floor, self._last_end - OVERLAP)
         return start, now + FUTURE_SLACK
 
     # -- async driver -------------------------------------------------------------
@@ -121,7 +160,9 @@ class Refresher:
         """One refresh. Returns False if skipped or failed."""
         if self.cache is not None and self.cache.is_busy():
             return False  # the camera drops queries during a download; poke() will follow
-        start, end = self.window()
+        now = self._clock()
+        full = now - self._last_full >= self.full_every
+        start, end = self.window(full=full)
         try:
             recs = await trio.to_thread.run_sync(self.fetch, start, end)
         except Exception as exc:  # noqa: BLE001 - camera unreachable, busy, ...
@@ -135,6 +176,14 @@ class Refresher:
         result = self.apply(recs)
         if result.added:
             log.info("refresh: %d new file(s)", len(result.added))
+        if full:
+            self._last_full = now
+            removed = self.reconcile(recs)
+            if removed and self.on_removed is not None:
+                try:
+                    await self.on_removed(removed)
+                except Exception as exc:  # noqa: BLE001 - kernel cache invalidation is best-effort
+                    log.debug("invalidation failed: %s", exc)
         return True
 
     async def run(self) -> None:

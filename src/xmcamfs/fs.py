@@ -42,6 +42,14 @@ class CameraFs(pyfuse3.Operations):
         self._status_buffers: dict[int, bytes] = {}  # fh -> status snapshot
         self._next_fh = 1
 
+    async def invalidate_removed(self, removed) -> None:
+        """Make the kernel forget entries the tree dropped (recordings overwritten on the camera)."""
+        for parent, name, inode in removed:
+            try:
+                pyfuse3.invalidate_entry_async(parent, os.fsencode(name), deleted=inode, ignore_enoent=True)
+            except Exception as exc:  # noqa: BLE001 - e.g. entry never cached
+                log.debug("could not invalidate %s: %s", name, exc)
+
     # -- status virtual file --------------------------------------------------
     def _status_bytes(self) -> bytes:
         if self.tracker is not None:

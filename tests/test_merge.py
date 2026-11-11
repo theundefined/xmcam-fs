@@ -78,3 +78,24 @@ def test_merge_name_collisions_stay_stable():
     tree = FsTree.from_recordings([a])
     tree.merge([a, b])
     assert names(tree, "2026-11-11", "mp4") == ["08.00.00-08.05.00.mp4", "08.00.00-08.05.00_2.mp4"]
+
+
+def test_remove_slots_drops_files_and_empty_directories():
+    a, b = rec("08.00.00", "08.05.00", token="a1", day=10), rec("08.00.00", "08.05.00", token="b1", day=11)
+    c = rec("08.05.00", "08.10.00", token="b2", day=11)
+    tree = FsTree.from_recordings([a, b, c])
+    day10 = tree.lookup(ROOT_INODE, "2026-11-10")
+    inodes_before = len(tree._nodes)
+
+    removed = tree.remove_slots([slot_key(a)])
+
+    assert [n.name for n in tree.list_children(ROOT_INODE)] == ["2026-11-11"]  # emptied date dir is gone
+    assert tree.get(day10.inode) is None
+    names_removed = [name for _, name, _ in removed]
+    assert names_removed[-1] == "2026-11-10" and "08.00.00-08.05.00.mp4" in names_removed  # children first
+    assert len(tree._nodes) == inodes_before - 1 - 2 - 2  # date dir, 2 views, 2 files
+    assert names(tree, "2026-11-11", "mp4") == ["08.00.00-08.05.00.mp4", "08.05.00-08.10.00.mp4"]
+
+    tree.remove_slots([slot_key(b)])
+    assert names(tree, "2026-11-11", "mp4") == ["08.05.00-08.10.00.mp4"]  # date dir stays while it has files
+    assert tree.remove_slots([slot_key(a)]) == []  # unknown slot: no-op

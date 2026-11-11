@@ -101,9 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--cache-max-size",
         dest="cache_max_size",
-        default="100M",
+        default="500M",
         type=_size_arg,
-        help="soft cap on cached footage; least recently used segments are evicted (default 100M, e.g. 2G, 0 = unlimited)",
+        help="soft cap on cached footage; least recently used segments are evicted (default 500M, e.g. 2G, 0 = unlimited)",
     )
     p.add_argument(
         "--refresh",
@@ -203,6 +203,7 @@ def main(argv=None) -> None:
         log.info("indexed %d recording(s)", len(recordings))
 
         fs = CameraFs(tree, cache, tracker=tracker, refresher=refresher if args.refresh > 0 else None)
+        refresher.on_removed = fs.invalidate_removed
         log.info("status file: cat %s/.status", mountpoint)
         fuse_options = set(pyfuse3.default_options)
         fuse_options.add(f"fsname=xmcam-{args.host}")

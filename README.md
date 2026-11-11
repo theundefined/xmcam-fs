@@ -112,12 +112,12 @@ skipped during downloads and run right after they finish.
 ### Cache size limit
 
 Downloaded and converted segments are cached on disk. `--cache-max-size` caps
-that cache (default **100M**; `2G`, `500M`, … or `0` for unlimited): when it is
+that cache (default **500M**; `2G`, `500M`, … or `0` for unlimited): when it is
 exceeded the least recently used segments are deleted and simply fetched again
 on next access. The limit is soft — the segment just produced and anything used
 in the last 30 s are never evicted, so one segment larger than the limit still
-works. A 5-minute segment is roughly 45 MB, so raise the limit if you want to
-keep more than a couple of them.
+works. A 5-minute segment is roughly 45 MB, so 500M holds about a dozen; raise the
+limit to keep more.
 
 ### Monitoring access and downloads
 
@@ -148,7 +148,7 @@ with ETA to stderr as each segment downloads.
 
 Options: `--days N` (how many past days to index, default 7), `--stream Main|Sub`,
 `--channel N`, `--cache-dir PATH` (default under `$XDG_CACHE_HOME`),
-`--cache-max-size SIZE` (default 100M), `--refresh SECONDS` (default 60),
+`--cache-max-size SIZE` (default 500M), `--refresh SECONDS` (default 60),
 `-b/--background`, `--log-file PATH`, `--user/--password`, `--foreground`, `--debug`.
 
 ## How it works
@@ -161,9 +161,12 @@ Xiongmai container is demuxed and remuxed to MP4. Results are cached on disk, so
 re-opening is instant.
 
 The recording list is refreshed in the background (see *Live updates*), so a
-long-running mount keeps up with the camera. Recordings the camera has since
-overwritten are not removed from the listing yet; opening one fails with an I/O
-error. Remount to drop them.
+long-running mount keeps up with the camera. The tree mirrors the last `--days`
+days: about every 15 minutes the whole window is listed again and recordings the
+camera has overwritten (or that slid out of the window) are removed — after being
+missing from two consecutive listings, so a glitchy reply cannot make files vanish.
+Files you already have open keep working, and cached copies stay in the cache until
+evicted by the size limit.
 
 ## Security & ethics
 

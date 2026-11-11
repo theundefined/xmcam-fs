@@ -111,3 +111,53 @@ def test_outdated_cache_file_is_dropped_when_a_known_segment_changes(tmp_path):
     stale.write_bytes(b"x")
     r.apply([older, rec(30, 35, "a1", length=120), rec(35, 40, "a2")])  # camera reports a different size
     assert not stale.exists()
+
+
+def test_reconcile_removes_recordings_missing_from_two_full_listings():
+    r = make(lambda s, e: [])
+    old, mid, new1, new2 = rec(20, 25, "a0"), rec(25, 30, "a1"), rec(30, 35, "a2"), rec(35, 40, "a3")
+    r.apply([old, mid, new1, new2])
+    r.apply([old, mid, new1, new2])
+    assert len(listing(r.tree)) == 4
+
+    assert r.reconcile([mid, new1, new2]) == []  # first miss: only counted
+    assert len(listing(r.tree)) == 4
+    removed = r.reconcile([mid, new1, new2])  # second miss: removed
+    assert removed and len(listing(r.tree)) == 3
+    assert "19.20.00-19.25.00.xmraw" not in listing(r.tree)
+
+
+def test_reconcile_forgives_a_single_glitch_and_ignores_empty_listings():
+    r = make(lambda s, e: [])
+    a, b, c = rec(20, 25, "a0"), rec(25, 30, "a1"), rec(30, 35, "a2")
+    r.apply([a, b, c])
+    r.apply([a, b, c])
+    r.reconcile([b, c])  # a missing once
+    r.reconcile([a, b, c])  # seen again -> counter reset
+    r.reconcile([b, c])  # missing once more, but not twice in a row
+    assert len(listing(r.tree)) == 3
+    assert r.reconcile([]) == []  # empty reply (camera glitch) never wipes the tree
+    assert r.reconcile([]) == []
+    assert len(listing(r.tree)) == 3
+
+
+def test_full_tick_prunes_and_notifies():
+    state = {"recs": []}
+    removed_seen = []
+
+    async def on_removed(removed):
+        removed_seen.extend(removed)
+
+    clock = {"now": NOW}
+    r = Refresher(FsTree(), lambda s, e: state["recs"], interval=60, days=7, clock=lambda: clock["now"],
+                  full_every=timedelta(minutes=15), on_removed=on_removed)
+    a, b, c = rec(20, 25, "a0"), rec(25, 30, "a1"), rec(30, 35, "a2")
+    r.apply([a, b, c])
+    r.apply([a, b, c])
+    assert len(listing(r.tree)) == 3
+    state["recs"] = [b, c]  # camera overwrote `a`
+    for _ in range(2):
+        clock["now"] += timedelta(minutes=16)  # each tick is a full listing
+        assert trio.run(r.tick) is True
+    assert "19.20.00-19.25.00.xmraw" not in listing(r.tree)
+    assert any(name == "19.20.00-19.25.00.mp4" for _, name, _ in removed_seen)

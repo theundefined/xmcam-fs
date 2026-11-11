@@ -206,6 +206,41 @@ class FsTree:
         for rec, slot in zip(recs, slots):
             self._slots[slot_key(rec)] = slot
 
+    # ----- removal ----------------------------------------------------------------
+
+    def slot_keys(self) -> List[tuple]:
+        """Keys of all segments currently in the tree."""
+        return list(self._slots)
+
+    def remove_slots(self, keys: Iterable[tuple]) -> List[Tuple[int, str, int]]:
+        """Remove segments (both views); drop view/date directories left empty.
+
+        Returns ``(parent_inode, name, inode)`` for every removed entry, children
+        before their parents, so the FUSE layer can invalidate kernel caches.
+        Inodes are never reused. Already open file handles are unaffected.
+        """
+        removed: List[Tuple[int, str, int]] = []
+        for key in keys:
+            slot = self._slots.pop(key, None)
+            for node in (slot or {}).values():
+                parent = self._nodes.get(node.parent)
+                if parent is not None and parent.children.get(node.name) == node.inode:
+                    del parent.children[node.name]
+                    removed.append((parent.inode, node.name, node.inode))
+                self._nodes.pop(node.inode, None)
+        root = self._nodes[ROOT_INODE]
+        for date_name, date_id in list(root.children.items()):
+            date = self._nodes[date_id]
+            if any(self._nodes[view_id].children for view_id in date.children.values()):
+                continue
+            for view_name, view_id in list(date.children.items()):
+                removed.append((date_id, view_name, view_id))
+                del self._nodes[view_id]
+            del root.children[date_name]
+            del self._nodes[date_id]
+            removed.append((ROOT_INODE, date_name, date_id))
+        return removed
+
     # ----- public read API ------------------------------------------------
 
     def get(self, inode: int) -> Optional[Node]:
