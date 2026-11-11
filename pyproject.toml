@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xmcam-fs"
-version = "0.5.1"
+version = "0.6.0"
 description = "Mount a Xiongmai / iCSee / XMeye IP camera as a FUSE filesystem and browse its recordings as files (MP4 or raw), sshfs-style. No cloud."
 readme = "README.md"
 requires-python = ">=3.10"
