@@ -119,7 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="detach after mounting and keep running in the background (stop with: fusermount3 -u MOUNTPOINT)",
     )
-    p.add_argument("--log-file", dest="log_file", help="log file for --background (default ~/.local/state/xmcam-fs/<host>.log)")
+    p.add_argument(
+        "--log-file", dest="log_file", help="log file for --background (default ~/.local/state/xmcam-fs/<host>.log)"
+    )
     p.add_argument(
         "--progress", action="store_true", help="show live download progress with ETA (when run in a terminal)"
     )
@@ -217,7 +219,9 @@ def main(argv=None) -> None:
             log.error("startup failed: %s", exc)
             notify(f"error: {exc}")
         raise
-    log.info("mounted %s at %s (cache: %s, limit: %s)", args.host, mountpoint, cache_dir, _fmt_limit(args.cache_max_size))
+    log.info(
+        "mounted %s at %s (cache: %s, limit: %s)", args.host, mountpoint, cache_dir, _fmt_limit(args.cache_max_size)
+    )
     if notify is not None:
         notify(f"ok: mounted {args.host} at {mountpoint} in the background (pid {os.getpid()}, log: {log_file})")
 

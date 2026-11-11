@@ -156,7 +156,9 @@ class FsTree:
         """
         result = MergeResult()
         fresh: Dict[str, List[Recording]] = {}
-        for rec in sorted((r for r in recordings if r.begin_time is not None), key=lambda r: (r.begin_time, r.filename)):
+        for rec in sorted(
+            (r for r in recordings if r.begin_time is not None), key=lambda r: (r.begin_time, r.filename)
+        ):
             slot = self._slots.get(slot_key(rec))
             if slot is not None:
                 self._update_slot(slot, rec, result)
@@ -199,7 +201,9 @@ class FsTree:
         slots = [{} for _ in recs]  # type: List[Dict[str, Node]]
         for view in VIEWS:
             view_id = date_node.children.get(view)
-            view_node = self._nodes[view_id] if view_id is not None else self._new_dir(date_node, view, "view", view=view)
+            view_node = (
+                self._nodes[view_id] if view_id is not None else self._new_dir(date_node, view, "view", view=view)
+            )
             for rec, name, slot in zip(recs, names, slots):
                 slot[view] = self._new_file(view_node, name + _EXTENSIONS[view], rec, view)
                 result.added.append(slot[view])

@@ -149,8 +149,15 @@ def test_full_tick_prunes_and_notifies():
         removed_seen.extend(removed)
 
     clock = {"now": NOW}
-    r = Refresher(FsTree(), lambda s, e: state["recs"], interval=60, days=7, clock=lambda: clock["now"],
-                  full_every=timedelta(minutes=15), on_removed=on_removed)
+    r = Refresher(
+        FsTree(),
+        lambda s, e: state["recs"],
+        interval=60,
+        days=7,
+        clock=lambda: clock["now"],
+        full_every=timedelta(minutes=15),
+        on_removed=on_removed,
+    )
     a, b, c = rec(20, 25, "a0"), rec(25, 30, "a1"), rec(30, 35, "a2")
     r.apply([a, b, c])
     r.apply([a, b, c])

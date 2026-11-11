@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Callable
+from typing import Callable, Optional
 
 #: Longest the launching process waits for the mount to come up.
 READY_TIMEOUT = 60.0
@@ -22,12 +22,13 @@ def daemonize() -> Callable[[str], None]:
     ``notify("ok: ...")`` (exit 0) or ``notify("error: ...")`` (exit 1).
     In the detached process it returns ``notify``; call it once, after mounting.
     """
-    read_fd, write_fd = os.pipe()
+    read_fd, pipe_w = os.pipe()
+    write_fd: Optional[int] = pipe_w
     sys.stdout.flush()
     sys.stderr.flush()
     pid = os.fork()
     if pid > 0:
-        os.close(write_fd)
+        os.close(pipe_w)
         _wait_for_daemon(read_fd, pid)  # does not return
     os.close(read_fd)
     os.setsid()
@@ -65,4 +66,6 @@ def _wait_for_daemon(read_fd: int, child_pid: int) -> None:
         sys.exit(0)
     if data.startswith("error"):
         sys.exit(data.strip())
-    sys.exit("xmcam-fs background process failed to start (see the log file)" if not ready else "background process exited")
+    sys.exit(
+        "xmcam-fs background process failed to start (see the log file)" if not ready else "background process exited"
+    )

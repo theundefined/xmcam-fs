@@ -14,13 +14,13 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from xmcam.dvrip import DVRIPClient
 from xmcam.exceptions import XMCamError
 from xmcam.media import convert_raw, have_ffmpeg
 from xmcam.models import Credentials, Recording
 from xmcam.playback import download_recording
-
 
 log = logging.getLogger("xmcamfs")
 
@@ -146,7 +146,7 @@ class SegmentCache:
                     pass
         return total
 
-    def evict(self, keep: Path = None) -> int:
+    def evict(self, keep: Optional[Path] = None) -> int:
         """Delete least-recently-used segments until under ``max_bytes``; returns bytes freed.
 
         The limit is soft: *keep* and anything used within :data:`EVICT_GRACE`
