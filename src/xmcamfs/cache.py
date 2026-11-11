@@ -45,6 +45,7 @@ class SegmentCache:
         port: int = 34567,
         channel: int = 0,
         stream: str = "Main",
+        tracker=None,
     ) -> None:
         self.host = host
         self.creds = credentials
@@ -52,6 +53,7 @@ class SegmentCache:
         self.port = port
         self.channel = channel
         self.stream = stream
+        self.tracker = tracker  # optional ActivityTracker for progress/ETA
         self._download_lock = threading.Lock()  # one playback channel per camera
 
         for sub in ("raw", "mp4", ".tmp"):
@@ -65,8 +67,11 @@ class SegmentCache:
             return self.cache_dir / "raw" / f"{stem}.xmraw"
         return self.cache_dir / "mp4" / f"{stem}.mp4"
 
-    def ensure(self, rec: Recording, view: str) -> Path:
-        """Return the cache path, downloading/converting once if needed (BLOCKING)."""
+    def ensure(self, rec: Recording, view: str, display: str = "") -> Path:
+        """Return the cache path, downloading/converting once if needed (BLOCKING).
+
+        *display* is the user-facing name reported in progress/status output.
+        """
         dest = self.path_for(rec, view)
         if dest.exists() and dest.stat().st_size > 0:
             return dest
@@ -75,10 +80,19 @@ class SegmentCache:
             # Re-check: another thread may have produced it while we waited.
             if dest.exists() and dest.stat().st_size > 0:
                 return dest
-            if view.lower() == "raw":
-                self._download_raw(rec, dest)
-            else:
-                self._produce_mp4(rec, dest)
+            key = str(dest)
+            progress = None
+            if self.tracker is not None:
+                self.tracker.start(key, display or _safe_stem(rec), view.lower(), rec.length_bytes)
+                progress = lambda n, _k=key: self.tracker.update(_k, n)  # noqa: E731
+            try:
+                if view.lower() == "raw":
+                    self._download_raw(rec, dest, progress=progress)
+                else:
+                    self._produce_mp4(rec, dest, progress=progress, key=key)
+            finally:
+                if self.tracker is not None:
+                    self.tracker.finish(key)
         return dest
 
     # -- internals ------------------------------------------------------------
@@ -87,21 +101,23 @@ class SegmentCache:
         cam.login_or_raise()
         return cam
 
-    def _download_raw(self, rec: Recording, dest: Path) -> None:
+    def _download_raw(self, rec: Recording, dest: Path, progress=None) -> None:
         tmp = dest.with_name(dest.name + ".part")
         cam = self._client()
         try:
-            download_recording(cam, rec, tmp, channel=self.channel, stream=self.stream)
+            download_recording(cam, rec, tmp, progress=progress, channel=self.channel, stream=self.stream)
         finally:
             cam.close()
         tmp.replace(dest)
 
-    def _produce_mp4(self, rec: Recording, dest: Path) -> None:
+    def _produce_mp4(self, rec: Recording, dest: Path, progress=None, key=None) -> None:
         if not have_ffmpeg():
             raise XMCamError("ffmpeg not found; cannot produce the MP4 view")
         stem = _safe_stem(rec)
         raw_tmp = self.cache_dir / ".tmp" / (stem + ".xmraw")
-        self._download_raw(rec, raw_tmp)
+        self._download_raw(rec, raw_tmp, progress=progress)
+        if self.tracker is not None and key is not None:
+            self.tracker.phase(key, "converting")
         # The temp output must keep a real ``.mp4`` extension so ffmpeg can infer
         # the muxer (a ``.part`` suffix makes it fail with "no output format").
         tmp_mp4 = self.cache_dir / ".tmp" / (stem + ".partial.mp4")

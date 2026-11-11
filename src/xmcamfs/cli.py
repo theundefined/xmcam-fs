@@ -83,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--password", help="password (or $XMCAM_PASS)")
     p.add_argument("--cache-dir", dest="cache_dir", help="where to cache downloaded segments")
     p.add_argument("--foreground", action="store_true", help="stay attached (default; Ctrl-C to unmount)")
+    p.add_argument(
+        "--progress", action="store_true", help="show live download progress with ETA (when run in a terminal)"
+    )
     p.add_argument("--debug", action="store_true", help="verbose logging")
     p.add_argument("--debug-fuse", action="store_true", dest="debug_fuse", help="FUSE protocol debug")
     return p
@@ -117,10 +120,24 @@ def main(argv=None) -> None:
     tree = FsTree.from_recordings(recordings)
     log.info("indexed %d recording(s)", len(recordings))
 
-    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir(args.host)
-    cache = SegmentCache(args.host, creds, cache_dir, port=args.port, channel=args.channel, stream=args.stream)
+    from .activity import ActivityTracker
 
-    fs = CameraFs(tree, cache)
+    progress_stream = sys.stderr if (args.progress and sys.stderr.isatty()) else None
+    tracker = ActivityTracker(progress_stream)
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir(args.host)
+    cache = SegmentCache(
+        args.host,
+        creds,
+        cache_dir,
+        port=args.port,
+        channel=args.channel,
+        stream=args.stream,
+        tracker=tracker,
+    )
+
+    fs = CameraFs(tree, cache, tracker=tracker)
+    log.info("status file: cat %s/.status", mountpoint)
     fuse_options = set(pyfuse3.default_options)
     fuse_options.add(f"fsname=xmcam-{args.host}")
     fuse_options.add("ro")

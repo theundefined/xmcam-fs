@@ -87,6 +87,33 @@ XMCAM_USER=... XMCAM_PASS=... xmcam-fs 192.0.2.10 ./mnt --stream Sub
 fusermount3 -u ./mnt
 ```
 
+### Monitoring access and downloads
+
+Opening a file triggers a download (segments are slow), so the mount tracks
+activity. Read the virtual **`.status`** file at the mount root to see what is
+being accessed and the progress of in-flight downloads, with **ETA**:
+
+```bash
+cat ./mnt/.status
+# or watch it live:
+watch -n1 cat ./mnt/.status
+```
+
+```
+xmcam-fs status
+
+Active downloads:
+  12.00.00-12.00.26.M.mp4  [mp4]   46%  2.1MB/4.6MB  543.7KB/s  ETA 00:04
+
+Recent access:
+  13:46:57  12.00.00-12.00.26.M.mp4  [mp4]  fetch
+
+Completed this session: 1
+```
+
+When run in a terminal, add **`--progress`** to also print a live progress line
+with ETA to stderr as each segment downloads.
+
 Options: `--days N` (how many past days to index, default 7), `--stream Main|Sub`,
 `--channel N`, `--cache-dir PATH` (default under `$XDG_CACHE_HOME`),
 `--user/--password`, `--foreground`, `--debug`.

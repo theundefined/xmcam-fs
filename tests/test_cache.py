@@ -47,7 +47,7 @@ def test_path_for():
 def test_ensure_raw_downloads_once(tmp_path, monkeypatch):
     calls = {"n": 0}
 
-    def fake_download(cam, rec, out_path, channel=0, stream="Main"):
+    def fake_download(cam, rec, out_path, progress=None, channel=0, stream="Main"):
         calls["n"] += 1
         with open(out_path, "wb") as fh:
             fh.write(b"RAWDATA")
@@ -64,7 +64,7 @@ def test_ensure_raw_downloads_once(tmp_path, monkeypatch):
 
 
 def test_ensure_mp4_downloads_then_converts(tmp_path, monkeypatch):
-    def fake_download(cam, rec, out_path, channel=0, stream="Main"):
+    def fake_download(cam, rec, out_path, progress=None, channel=0, stream="Main"):
         with open(out_path, "wb") as fh:
             fh.write(b"XMRAW")
         return 5
