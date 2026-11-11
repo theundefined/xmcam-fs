@@ -39,6 +39,7 @@ class CameraFs(pyfuse3.Operations):
         self._uid = os.getuid()
         self._gid = os.getgid()
         self._handles: dict[int, int] = {}  # fh -> os file descriptor
+        self._ts_jobs: dict[int, object] = {}  # fh -> TsJob, for handles on a ts file that is still being produced
         self._status_buffers: dict[int, bytes] = {}  # fh -> status snapshot
         self._next_fh = 1
 
@@ -112,7 +113,15 @@ class CameraFs(pyfuse3.Operations):
         e.st_blocks = (e.st_size + 511) // 512
         e.attr_timeout = 10
         e.entry_timeout = 10
+        if not node.is_dir and node.view == "ts" and self._ts_in_progress(node):
+            e.attr_timeout = 0  # the size estimate is replaced by the real one when it finishes
         return e
+
+    def _ts_in_progress(self, node: Node) -> bool:
+        try:
+            return self.cache is not None and self.cache.ts_job_active(node.recording)
+        except Exception:  # noqa: BLE001 - best-effort
+            return False
 
     async def getattr(self, inode, ctx=None):
         if inode == STATUS_INODE:
@@ -179,13 +188,18 @@ class CameraFs(pyfuse3.Operations):
 
         # Record the access (and whether the segment is already cached).
         hit = False
+        cached_size = None
         try:
             cached = self.cache.path_for(node.recording, node.view or "mp4")
-            hit = cached.exists() and cached.stat().st_size > 0
+            cached_size = cached.stat().st_size if cached.exists() else None
+            hit = bool(cached_size)
         except Exception:  # noqa: BLE001 - best-effort
             hit = False
         if self.tracker is not None:
-            self.tracker.access(node.name, node.view or "mp4", hit)
+            self.tracker.access(node.name, node.view or "mp4", hit, size=cached_size)
+
+        if node.view == "ts" and not hit:
+            return await self._open_ts(node)
 
         # Produce (download + maybe convert) the segment off the event loop.
         try:
@@ -217,6 +231,55 @@ class CameraFs(pyfuse3.Operations):
         info.keep_cache = True
         return info
 
+    async def _open_ts(self, node: Node) -> FileInfo:
+        """Open a ts file that is not cached yet: stream it while it is being produced.
+
+        Returns as soon as the first bytes exist. The handle is non-seekable and uses
+        direct I/O, so players read it like a pipe (no probing of the not yet existing
+        end of the file) and the kernel never serves a not yet complete page.
+        """
+        token = trio.lowlevel.current_trio_token()
+        try:
+            job = self.cache.ts_job(node.recording, node.name)
+            if job is None:  # finished and cached in the meantime
+                return await self._open_cached(node)
+            job.acquire()
+            try:
+                await job.wait_started()
+                fd = job.open_fd()
+            except BaseException:
+                job.release()
+                raise
+        except FUSEError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.error("failed to open %s: %s", node.name, exc)
+            raise FUSEError(errno.EIO)
+        if self.refresher is not None:
+            job.callbacks.append(lambda _job: token.run_sync_soon(self.refresher.poke))
+        fh = self._next_fh
+        self._next_fh += 1
+        self._handles[fh] = fd
+        self._ts_jobs[fh] = job
+        info = FileInfo(fh=fh)
+        info.direct_io = True
+        info.nonseekable = True
+        return info
+
+    async def _open_cached(self, node: Node) -> FileInfo:
+        path = self.cache.path_for(node.recording, node.view or "mp4")
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError as exc:
+            log.error("cannot open cached file %s: %s", path, exc)
+            raise FUSEError(errno.EIO)
+        fh = self._next_fh
+        self._next_fh += 1
+        self._handles[fh] = fd
+        info = FileInfo(fh=fh)
+        info.keep_cache = True
+        return info
+
     async def read(self, fh, off, size):
         buf = self._status_buffers.get(fh)
         if buf is not None:
@@ -224,6 +287,13 @@ class CameraFs(pyfuse3.Operations):
         fd = self._handles.get(fh)
         if fd is None:
             raise FUSEError(errno.EBADF)
+        job = self._ts_jobs.get(fh)
+        if job is not None:
+            try:
+                return await job.read(fd, off, size)
+            except OSError as exc:
+                log.error("ts read error on fh %s: %s", fh, exc)
+                raise FUSEError(errno.EIO)
         try:
             return os.pread(fd, size, off)
         except OSError as exc:
@@ -232,6 +302,9 @@ class CameraFs(pyfuse3.Operations):
 
     async def release(self, fh):
         self._status_buffers.pop(fh, None)
+        job = self._ts_jobs.pop(fh, None)
+        if job is not None:
+            job.release()
         fd = self._handles.pop(fh, None)
         if fd is not None:
             try:

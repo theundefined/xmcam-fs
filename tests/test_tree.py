@@ -37,7 +37,7 @@ def test_root_and_date_layout():
     for date_name in ("2026-11-10", "2026-11-11"):
         date = tree.lookup(ROOT_INODE, date_name)
         assert date.kind == "date" and date.is_dir
-        assert child_names(tree, date.inode) == ["mp4", "raw"]
+        assert child_names(tree, date.inode) == ["mp4", "raw", "ts"]
 
     busy = tree.lookup(ROOT_INODE, "2026-11-10")
     mp4 = tree.lookup(busy.inode, "mp4")
@@ -139,3 +139,30 @@ def test_empty_tree():
     tree = FsTree.from_recordings([])
     assert tree.get(ROOT_INODE) is not None
     assert tree.list_children(ROOT_INODE) == []
+
+
+def test_view_selection():
+    recs = sample_recordings()
+    only_ts = FsTree.from_recordings(recs, views=["ts"])
+    date = only_ts.lookup(ROOT_INODE, "2026-11-10")
+    assert child_names(only_ts, date.inode) == ["ts"]
+    assert child_names(only_ts, only_ts.lookup(date.inode, "ts").inode) == [
+        "08.00.00-08.05.00.ts",
+        "09.00.00-09.05.00.ts",
+    ]
+
+    mp4_raw = FsTree.from_recordings(recs, views=("raw", "mp4"))  # order of the argument does not matter
+    date = mp4_raw.lookup(ROOT_INODE, "2026-11-10")
+    assert child_names(mp4_raw, date.inode) == ["mp4", "raw"]
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        FsTree.from_recordings(recs, views=["nope"])
+
+
+def test_ts_size_is_an_upper_bound_of_the_container():
+    tree = FsTree.from_recordings(sample_recordings())
+    ts = find_file(tree, "2026-11-10", "ts", "08.00.00-08.05.00.ts")
+    mp4 = find_file(tree, "2026-11-10", "mp4", "08.00.00-08.05.00.mp4")
+    assert ts.size > mp4.size == MB49

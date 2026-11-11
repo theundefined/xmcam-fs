@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 from xmcam.dvrip import DVRIPClient
 from xmcam.exceptions import XMCamError
@@ -22,7 +22,13 @@ from xmcam.media import convert_raw, have_ffmpeg
 from xmcam.models import Credentials, Recording
 from xmcam.playback import download_recording
 
+if TYPE_CHECKING:  # pragma: no cover
+    from .stream import TsJob
+
 log = logging.getLogger("xmcamfs")
+
+#: Subdirectories of the cache that hold finished segments (what the size limit counts).
+SEGMENT_DIRS = ("raw", "mp4", "ts")
 
 #: Cache files used less than this long ago are never evicted (they may be about to be opened).
 EVICT_GRACE = 30.0
@@ -68,6 +74,7 @@ class SegmentCache:
         stream: str = "Main",
         tracker=None,
         max_bytes: int = 0,
+        ts_on_close: str = "cancel",
     ) -> None:
         self.host = host
         self.creds = credentials
@@ -78,16 +85,22 @@ class SegmentCache:
         self.tracker = tracker  # optional ActivityTracker for progress/ETA
         self._download_lock = threading.Lock()  # one playback channel per camera
         self.max_bytes = max_bytes  # soft cap on cached footage; 0 = unlimited
+        self.ts_on_close = ts_on_close  # "cancel" | "finish": what a ts download does when its last reader closes
+        self._jobs: Dict[Path, "TsJob"] = {}  # ts segments being produced right now
+        self._jobs_lock = threading.Lock()
 
-        for sub in ("raw", "mp4", ".tmp"):
+        for sub in (*SEGMENT_DIRS, ".tmp"):
             (self.cache_dir / sub).mkdir(parents=True, exist_ok=True)
 
     # -- public ---------------------------------------------------------------
     def path_for(self, rec: Recording, view: str) -> Path:
         """The cache path for this (recording, view), whether or not it exists yet."""
         stem = _safe_stem(rec)
-        if view.lower() == "raw":
+        view = view.lower()
+        if view == "raw":
             return self.cache_dir / "raw" / f"{stem}.xmraw"
+        if view == "ts":
+            return self.cache_dir / "ts" / f"{stem}.ts"
         return self.cache_dir / "mp4" / f"{stem}.mp4"
 
     def is_busy(self) -> bool:
@@ -102,6 +115,14 @@ class SegmentCache:
         dest = self.path_for(rec, view)
         if self._touch_if_cached(dest):
             return dest
+        if view.lower() == "ts":  # progressive view: run the job to the end
+            job = self.ts_job(rec, display)
+            if job is not None:
+                job.acquire()  # a blocking caller is a reader: never cancelled
+                job._thread.join()
+                if job.error:
+                    raise XMCamError(f"ts rendering failed: {job.error}")
+            return dest
 
         with self._download_lock:
             # Re-check: another thread may have produced it while we waited.
@@ -112,16 +133,43 @@ class SegmentCache:
             if self.tracker is not None:
                 self.tracker.start(key, display or _safe_stem(rec), view.lower(), rec.length_bytes)
                 progress = lambda n, _k=key: self.tracker.update(_k, n)  # noqa: E731
+            ok = False
             try:
                 if view.lower() == "raw":
                     self._download_raw(rec, dest, progress=progress)
                 else:
                     self._produce_mp4(rec, dest, progress=progress, key=key)
+                ok = True
             finally:
                 if self.tracker is not None:
-                    self.tracker.finish(key)
+                    self.tracker.finish(key, ok=ok, size=dest.stat().st_size if ok else None)
             self.evict(keep=dest)
         return dest
+
+    # -- progressive ts view ----------------------------------------------------
+    def ts_job(self, rec: Recording, display: str = "") -> Optional["TsJob"]:
+        """The running job for this segment's ts rendering (started if needed).
+
+        Returns ``None`` when the finished file is already cached.
+        """
+        from .stream import TsJob
+
+        dest = self.path_for(rec, "ts")
+        if self._touch_if_cached(dest):
+            return None
+        with self._jobs_lock:
+            job = self._jobs.get(dest)
+            if job is None or job.done:
+                job = TsJob(self, rec, display or _safe_stem(rec), dest, on_close=self.ts_on_close)
+                self._jobs[dest] = job
+                job.start()
+        return job
+
+    def ts_job_active(self, rec: Recording) -> bool:
+        """True while this segment's ts rendering is still being produced."""
+        with self._jobs_lock:
+            job = self._jobs.get(self.path_for(rec, "ts"))
+            return job is not None and not job.done
 
     # -- size limit -----------------------------------------------------------
     @staticmethod
@@ -138,7 +186,7 @@ class SegmentCache:
     def usage(self) -> int:
         """Total bytes of cached segments (temporary files not counted)."""
         total = 0
-        for sub in ("raw", "mp4"):
+        for sub in SEGMENT_DIRS:
             for f in (self.cache_dir / sub).iterdir():
                 try:
                     total += f.stat().st_size
@@ -156,7 +204,7 @@ class SegmentCache:
         if self.max_bytes <= 0:
             return 0
         files = []
-        for sub in ("raw", "mp4"):
+        for sub in SEGMENT_DIRS:
             for f in (self.cache_dir / sub).iterdir():
                 try:
                     st = f.stat()

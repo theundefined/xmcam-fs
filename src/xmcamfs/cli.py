@@ -25,6 +25,8 @@ from xmcam.exceptions import XMCamError
 from xmcam.files import list_recordings_range
 from xmcam.models import Credentials, Recording
 
+from .tree import VIEWS
+
 log = logging.getLogger("xmcamfs")
 
 
@@ -74,6 +76,14 @@ def _load_recordings(args, creds: Credentials):
     return fetch_recordings(args, creds, end - timedelta(days=args.days), end)
 
 
+def _views_arg(text: str):
+    names = [part.strip().lower() for part in text.split(",") if part.strip()]
+    bad = [n for n in names if n not in VIEWS]
+    if bad or not names:
+        raise argparse.ArgumentTypeError(f"invalid view(s) {bad or text!r}; choose from {', '.join(VIEWS)}")
+    return tuple(v for v in VIEWS if v in names)
+
+
 def _size_arg(text: str) -> int:
     from .cache import parse_size
 
@@ -104,6 +114,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="500M",
         type=_size_arg,
         help="soft cap on cached footage; least recently used segments are evicted (default 500M, e.g. 2G, 0 = unlimited)",
+    )
+    p.add_argument(
+        "--views",
+        type=_views_arg,
+        default=VIEWS,
+        metavar="LIST",
+        help="comma-separated views to mount: mp4 (playable after a full download), raw (original container), "
+        "ts (MPEG-TS, plays while still downloading). Default: all of them",
+    )
+    p.add_argument(
+        "--ts-on-close",
+        dest="ts_on_close",
+        choices=["cancel", "finish"],
+        default="cancel",
+        help="ts view: when the last reader closes a file whose download is still running, cancel it "
+        "(after a short grace period; default) or finish downloading it into the cache",
     )
     p.add_argument(
         "--refresh",
@@ -191,9 +217,10 @@ def main(argv=None) -> None:
             stream=args.stream,
             tracker=tracker,
             max_bytes=args.cache_max_size,
+            ts_on_close=args.ts_on_close,
         )
 
-        tree = FsTree()
+        tree = FsTree(args.views)
         refresher = Refresher(
             tree,
             lambda start, end: fetch_recordings(args, creds, start, end),

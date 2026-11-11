@@ -41,3 +41,37 @@ def test_converting_phase_shown():
     t.start("k", "clip.mp4", "mp4", 1000)
     t.phase("k", "converting")
     assert "converting" in t.snapshot()
+
+
+def test_recent_access_shows_size_and_speed(monkeypatch):
+    import xmcamfs.activity as act
+
+    clock = {"t": 100.0}
+    monkeypatch.setattr(act.time, "monotonic", lambda: clock["t"])
+    t = ActivityTracker()
+    t.access("cached.mp4", "mp4", hit=True, size=3 * 1024 * 1024)
+    t.access("clip.mp4", "mp4", hit=False)
+    t.start("k", "clip.mp4", "mp4", 2_000_000)
+    assert "fetch  ..." in t.snapshot()
+
+    clock["t"] = 110.0  # 10 s of downloading 2 MB ...
+    t.update("k", 2 * 1024 * 1024)
+    t.phase("k", "converting")
+    clock["t"] = 150.0  # ... then 40 s of conversion must not count towards the speed
+    t.finish("k", ok=True, size=2_500_000)
+
+    snap = t.snapshot()
+    assert "cached.mp4  [mp4]  hit  3.0MB" in snap
+    line = next(ln for ln in snap.splitlines() if "clip.mp4" in ln and "fetch" in ln)
+    assert "2.4MB" in line  # final file size
+    assert "204.8KB/s" in line  # 2 MiB / 10 s
+
+
+def test_failed_fetch_is_marked():
+    t = ActivityTracker()
+    t.access("bad.mp4", "mp4", hit=False)
+    t.start("k", "bad.mp4", "mp4", 1000)
+    t.finish("k", ok=False)
+    snap = t.snapshot()
+    assert "fetch  FAILED" in snap
+    assert "Completed this session: 0" in snap

@@ -12,18 +12,25 @@ mnt/
     ├── mp4/
     │   ├── 08.00.00-08.05.00.mp4        # continuous recording
     │   └── 08.09.17-08.09.34.M.mp4      # motion clip (".M" marker)
-    └── raw/
-        ├── 08.00.00-08.05.00.xmraw      # original Xiongmai container
-        └── 08.09.17-08.09.34.M.xmraw
+    ├── raw/
+    │   ├── 08.00.00-08.05.00.xmraw      # original Xiongmai container
+    │   └── 08.09.17-08.09.34.M.xmraw
+    └── ts/
+        ├── 08.00.00-08.05.00.ts         # MPEG-TS: plays while it is still downloading
+        └── 08.09.17-08.09.34.M.ts
 ```
 
-Each recording appears twice:
+Each recording appears three times:
 
 - **`mp4/`** — a playable MP4 (HEVC/H.264, stream-copied, no re-encode). The
   first time you open one, the whole segment is downloaded and converted, then
   cached — so the first read is slow (~2 min for a 5-minute segment on these
   cameras) and later reads are instant.
 - **`raw/`** — the original `.xmraw` container, exact size, no conversion cost.
+- **`ts/`** — MPEG-TS that **starts playing within a few seconds** (see
+  [Streaming playback](#streaming-playback)).
+
+`mp4/` and `ts/` carry the camera's audio (G.711 A-law, encoded to AAC).
 
 Motion-triggered clips are tagged with a **`.M`** marker in the file name, so
 motion stands out in a plain `ls` (and `ls *.M.mp4` lists just those).
@@ -90,6 +97,41 @@ xmcam-fs 192.0.2.10 ./mnt --background
 fusermount3 -u ./mnt
 ```
 
+### Choosing views
+
+All three views are mounted by default. Mount only what you need with `--views`
+(e.g. `--views ts` for a player-only mount, `--views raw,mp4` for backups):
+
+```bash
+xmcam-fs 192.0.2.10 ./mnt --views ts
+```
+
+### Streaming playback
+
+Opening a file in `mp4/` downloads and converts the whole segment first (an MP4
+keeps its index at the end of the file), so a player waits minutes. Files in
+**`ts/`** are produced while they download: `open` returns after a couple of seconds
+and the bytes are served as they appear. The camera sends 3–8× faster than real
+time, so playback does not run dry.
+
+```bash
+mpv   ./mnt/2026-11-10/ts/08.00.00-08.05.00.ts
+mplayer ./mnt/2026-11-10/ts/08.00.00-08.05.00.ts
+```
+
+- While a segment is still being produced its file is **not seekable** (players treat
+  it like a pipe): you can watch from the start but not jump ahead. Once the segment
+  is complete it is cached, and every later open is a normal, fully seekable file.
+- The camera has one playback channel, so only one segment downloads at a time.
+- `--ts-on-close cancel` (default): when the last reader closes a file whose download
+  is still running (after a 15 s grace period, since players often reopen a file),
+  the download is cancelled and the partial output discarded, which frees the
+  camera. `--ts-on-close finish` keeps downloading so the whole segment ends up in
+  the cache.
+- Picture and sound stay in sync: the camera's frame rate is not constant (it varies
+  around the nominal 12 fps by about 1% between segments, which would drift by seconds
+  over ten minutes), so every video frame is time-stamped from the audio clock.
+
 ### Live updates
 
 The mount follows the camera: every `--refresh` seconds (default 60; `0` = never)
@@ -138,16 +180,21 @@ Active downloads:
   12.00.00-12.00.26.M.mp4  [mp4]   46%  2.1MB/4.6MB  543.7KB/s  ETA 00:04
 
 Recent access:
-  13:46:57  12.00.00-12.00.26.M.mp4  [mp4]  fetch
+  13:46:57  12.00.00-12.00.26.M.mp4  [mp4]  fetch  4.4MB  543.7KB/s
+  13:44:02  11.55.00-12.00.00.mp4  [mp4]  hit  45.1MB
 
 Completed this session: 1
 ```
+
+Each access shows the size of the file and, for a download, the download speed
+(conversion time excluded).
 
 When run in a terminal, add **`--progress`** to also print a live progress line
 with ETA to stderr as each segment downloads.
 
 Options: `--days N` (how many past days to index, default 7), `--stream Main|Sub`,
 `--channel N`, `--cache-dir PATH` (default under `$XDG_CACHE_HOME`),
+`--views LIST` (default `mp4,raw,ts`), `--ts-on-close cancel|finish`,
 `--cache-max-size SIZE` (default 500M), `--refresh SECONDS` (default 60),
 `-b/--background`, `--log-file PATH`, `--user/--password`, `--foreground`, `--debug`.
 

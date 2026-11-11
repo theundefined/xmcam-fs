@@ -13,6 +13,8 @@ Layout::
           HH.MM.SS-HH.MM.SS.M.mp4  a motion-triggered recording (".M" marker)
         raw/                      view directory
           HH.MM.SS-HH.MM.SS.xmraw
+        ts/                       view directory (MPEG-TS, playable while it is still downloading)
+          HH.MM.SS-HH.MM.SS.ts
 """
 
 import re
@@ -25,9 +27,11 @@ ROOT_INODE = 1
 
 VIEW_MP4 = "mp4"
 VIEW_RAW = "raw"
-VIEWS = (VIEW_MP4, VIEW_RAW)
+VIEW_TS = "ts"
+#: Every available view; a mount can be restricted to a subset (``--views``).
+VIEWS = (VIEW_MP4, VIEW_RAW, VIEW_TS)
 
-_EXTENSIONS = {VIEW_MP4: ".mp4", VIEW_RAW: ".xmraw"}
+_EXTENSIONS = {VIEW_MP4: ".mp4", VIEW_RAW: ".xmraw", VIEW_TS: ".ts"}
 
 
 @dataclass
@@ -60,6 +64,11 @@ def slot_key(rec: Recording) -> tuple:
     return (rec.begin_time, ident, rec.channel)
 
 
+def ts_size_estimate(length_bytes: int) -> int:
+    """Upper bound for the TS size of a segment (TS/PES overhead + AAC track)."""
+    return int(length_bytes * 1.15) + 256 * 1024
+
+
 def _base_name(rec: Recording) -> str:
     """Return ``HH.MM.SS-HH.MM.SS`` for a recording (without extension).
 
@@ -89,7 +98,10 @@ class MergeResult:
 class FsTree:
     """Inode tree built from recordings. Read-only for users; grows via :meth:`merge`."""
 
-    def __init__(self) -> None:
+    def __init__(self, views: Iterable[str] = VIEWS) -> None:
+        self.views = tuple(v for v in VIEWS if v in set(views))  # canonical order, no duplicates
+        if not self.views:
+            raise ValueError(f"no valid view in {tuple(views)!r}; choose from {VIEWS}")
         root = Node(inode=ROOT_INODE, name="", kind="root", parent=ROOT_INODE, is_dir=True)
         self._nodes: Dict[int, Node] = {ROOT_INODE: root}
         self._next_inode = ROOT_INODE + 1
@@ -97,9 +109,9 @@ class FsTree:
         self._slots: Dict[tuple, Dict[str, Node]] = {}
 
     @classmethod
-    def from_recordings(cls, recordings: Iterable[Recording]) -> "FsTree":
+    def from_recordings(cls, recordings: Iterable[Recording], views: Iterable[str] = VIEWS) -> "FsTree":
         """Build the tree. Recordings without ``begin_time`` are skipped."""
-        tree = cls()
+        tree = cls(views)
         tree.merge(recordings)
         return tree
 
@@ -135,8 +147,9 @@ class FsTree:
             # For "raw" this is exact. For "mp4" it is an UPPER BOUND: the
             # real MP4 is slightly smaller than the container, and the true
             # size is only known after conversion. Keep this in mind when
-            # the FUSE layer reports st_size.
-            size=rec.length_bytes,
+            # the FUSE layer reports st_size. "ts" is also an upper bound
+            # (MPEG-TS overhead + audio), as it is served while being produced.
+            size=ts_size_estimate(rec.length_bytes) if view == VIEW_TS else rec.length_bytes,
             mtime=self._file_mtime(rec),
         )
         self._nodes[node.inode] = node
@@ -187,19 +200,20 @@ class FsTree:
         root = self._nodes[ROOT_INODE]
         date_id = root.children.get(date_name)
         date_node = self._nodes[date_id] if date_id is not None else self._new_dir(root, date_name, "date")
-        mp4_id = date_node.children.get(VIEW_MP4)
-        used = set(self._nodes[mp4_id].children) if mp4_id is not None else set()  # views share basenames
+        first = self.views[0]
+        first_id = date_node.children.get(first)
+        used = set(self._nodes[first_id].children) if first_id is not None else set()  # views share basenames
         names: List[str] = []
         for rec in recs:
             base = _base_name(rec)
             name, n = base, 1
-            while name + _EXTENSIONS[VIEW_MP4] in used:
+            while name + _EXTENSIONS[first] in used:
                 n += 1
                 name = f"{base}_{n}"
-            used.add(name + _EXTENSIONS[VIEW_MP4])
+            used.add(name + _EXTENSIONS[first])
             names.append(name)
         slots = [{} for _ in recs]  # type: List[Dict[str, Node]]
-        for view in VIEWS:
+        for view in self.views:
             view_id = date_node.children.get(view)
             view_node = (
                 self._nodes[view_id] if view_id is not None else self._new_dir(date_node, view, "view", view=view)

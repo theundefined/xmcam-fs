@@ -36,7 +36,7 @@ def test_merge_adds_new_files_keeping_inodes():
 
     result = tree.merge([rec("08.00.00", "08.05.00", token="a1"), rec("08.05.00", "08.10.00", token="a2")])
 
-    assert len(result.added) == 2  # mp4 + raw of the new segment
+    assert len(result.added) == 3  # mp4 + raw + ts of the new segment
     assert not result.updated
     assert names(tree, "2026-11-11", "mp4") == ["08.00.00-08.05.00.mp4", "08.05.00-08.10.00.mp4"]
     assert names(tree, "2026-11-11", "raw") == ["08.00.00-08.05.00.xmraw", "08.05.00-08.10.00.xmraw"]
@@ -58,7 +58,7 @@ def test_merge_same_slot_updates_in_place_without_duplicate():
     result = tree.merge([rec("19.41.55", "19.44.20", length=150)])
 
     assert not result.added
-    assert len(result.updated) == 2
+    assert len(result.updated) == 3
     old = result.updated[0][1]
     assert old.end_time == datetime(2026, 11, 11, 19, 44, 10)
     assert names(tree, "2026-11-11", "raw") == ["19.41.55-19.44.10.xmraw"]  # name (and inode) stay
@@ -93,7 +93,7 @@ def test_remove_slots_drops_files_and_empty_directories():
     assert tree.get(day10.inode) is None
     names_removed = [name for _, name, _ in removed]
     assert names_removed[-1] == "2026-11-10" and "08.00.00-08.05.00.mp4" in names_removed  # children first
-    assert len(tree._nodes) == inodes_before - 1 - 2 - 2  # date dir, 2 views, 2 files
+    assert len(tree._nodes) == inodes_before - 1 - 3 - 3  # date dir, 3 views, 3 files
     assert names(tree, "2026-11-11", "mp4") == ["08.00.00-08.05.00.mp4", "08.05.00-08.10.00.mp4"]
 
     tree.remove_slots([slot_key(b)])
