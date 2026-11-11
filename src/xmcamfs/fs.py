@@ -30,11 +30,12 @@ STATUS_INODE = 2**31 - 1
 
 
 class CameraFs(pyfuse3.Operations):
-    def __init__(self, tree: FsTree, cache: SegmentCache, tracker=None) -> None:
+    def __init__(self, tree: FsTree, cache: SegmentCache, tracker=None, refresher=None) -> None:
         super().__init__()
         self.tree = tree
         self.cache = cache
         self.tracker = tracker  # optional ActivityTracker
+        self.refresher = refresher  # optional Refresher; poked when a download finishes
         self._uid = os.getuid()
         self._gid = os.getgid()
         self._handles: dict[int, int] = {}  # fh -> os file descriptor
@@ -169,13 +170,13 @@ class CameraFs(pyfuse3.Operations):
             raise FUSEError(errno.EISDIR)
 
         # Record the access (and whether the segment is already cached).
-        if self.tracker is not None:
+        hit = False
+        try:
+            cached = self.cache.path_for(node.recording, node.view or "mp4")
+            hit = cached.exists() and cached.stat().st_size > 0
+        except Exception:  # noqa: BLE001 - best-effort
             hit = False
-            try:
-                cached = self.cache.path_for(node.recording, node.view or "mp4")
-                hit = cached.exists() and cached.stat().st_size > 0
-            except Exception:  # noqa: BLE001 - best-effort
-                hit = False
+        if self.tracker is not None:
             self.tracker.access(node.name, node.view or "mp4", hit)
 
         # Produce (download + maybe convert) the segment off the event loop.
@@ -183,7 +184,11 @@ class CameraFs(pyfuse3.Operations):
             path = await trio.to_thread.run_sync(self.cache.ensure, node.recording, node.view, node.name)
         except Exception as exc:  # noqa: BLE001 - surface any failure as EIO
             log.error("failed to produce %s: %s", node.name, exc)
+            if self.refresher is not None and not hit:
+                self.refresher.poke()
             raise FUSEError(errno.EIO)
+        if self.refresher is not None and not hit:
+            self.refresher.poke()  # the camera is free again: catch up on new recordings
 
         try:
             fd = os.open(path, os.O_RDONLY)

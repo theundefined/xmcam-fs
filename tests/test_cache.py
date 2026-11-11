@@ -99,3 +99,76 @@ def test_ensure_mp4_requires_ffmpeg(tmp_path, monkeypatch):
     cache = _make_cache(tmp_path, monkeypatch)
     with pytest.raises(Exception):
         cache.ensure(_rec(), "mp4")
+
+
+def test_parse_size():
+    from xmcamfs.cache import parse_size
+
+    assert parse_size("100M") == 100 * 1024**2
+    assert parse_size("2g") == 2 * 1024**3
+    assert parse_size("512k") == 512 * 1024
+    assert parse_size("1234") == 1234
+    assert parse_size("0") == 0
+    with pytest.raises(ValueError):
+        parse_size("lots")
+
+
+def _seed(tmp_path, monkeypatch, max_bytes, files):
+    """Create cache files as (subdir, name, size, age_seconds)."""
+    import os
+    import time
+
+    cache = _make_cache(tmp_path, monkeypatch)
+    cache.max_bytes = max_bytes
+    for sub, name, size, age in files:
+        p = tmp_path / sub / name
+        p.write_bytes(b"x" * size)
+        t = time.time() - age
+        os.utime(p, (t, t))
+    return cache
+
+
+def test_evict_removes_least_recently_used_first(tmp_path, monkeypatch):
+    cache = _seed(
+        tmp_path,
+        monkeypatch,
+        250,
+        [("raw", "old.xmraw", 100, 1000), ("mp4", "mid.mp4", 100, 500), ("raw", "new.xmraw", 100, 100)],
+    )
+    freed = cache.evict()
+    assert freed == 100
+    assert not (tmp_path / "raw" / "old.xmraw").exists()
+    assert (tmp_path / "mp4" / "mid.mp4").exists() and (tmp_path / "raw" / "new.xmraw").exists()
+
+
+def test_evict_never_removes_keep_or_recent_files(tmp_path, monkeypatch):
+    cache = _seed(tmp_path, monkeypatch, 10, [("raw", "fresh.xmraw", 100, 1), ("raw", "keep.xmraw", 100, 1000)])
+    cache.evict(keep=tmp_path / "raw" / "keep.xmraw")
+    assert (tmp_path / "raw" / "fresh.xmraw").exists()  # inside the grace period
+    assert (tmp_path / "raw" / "keep.xmraw").exists()  # explicitly protected
+
+
+def test_evict_unlimited_and_part_files(tmp_path, monkeypatch):
+    cache = _seed(tmp_path, monkeypatch, 0, [("raw", "a.xmraw", 100, 1000)])
+    assert cache.evict() == 0
+    cache.max_bytes = 10
+    (tmp_path / "raw" / "dl.xmraw.part").write_bytes(b"x" * 100)
+    import os
+
+    os.utime(tmp_path / "raw" / "dl.xmraw.part", (1, 1))
+    cache.evict()
+    assert (tmp_path / "raw" / "dl.xmraw.part").exists()  # in-flight download is never touched
+    assert not (tmp_path / "raw" / "a.xmraw").exists()
+
+
+def test_ensure_evicts_after_producing(tmp_path, monkeypatch):
+    def fake_download(cam, rec, out_path, progress=None, channel=0, stream="Main"):
+        with open(out_path, "wb") as fh:
+            fh.write(b"N" * 100)
+        return 100
+
+    monkeypatch.setattr(cache_mod, "download_recording", fake_download)
+    cache = _seed(tmp_path, monkeypatch, 150, [("raw", "old.xmraw", 100, 1000)])
+    path = cache.ensure(_rec(), "raw")
+    assert path.exists()
+    assert not (tmp_path / "raw" / "old.xmraw").exists()

@@ -17,12 +17,13 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List
 
 from xmcam.credentials import recover_credentials
 from xmcam.dvrip import DVRIP_PORT, DVRIPClient
 from xmcam.exceptions import XMCamError
 from xmcam.files import list_recordings_range
-from xmcam.models import Credentials
+from xmcam.models import Credentials, Recording
 
 log = logging.getLogger("xmcamfs")
 
@@ -47,14 +48,15 @@ def _default_cache_dir(host: str) -> Path:
     return Path(base) / "xmcam-fs" / host
 
 
-def _load_recordings(args, creds: Credentials):
-    end = datetime.now()
-    start = end - timedelta(days=args.days)
-    cam = DVRIPClient(args.host, user=creds.username, password=creds.password, port=args.port)
-    if not cam.login():
-        from xmcam.dvrip import RET_MEANING
+def _default_log_file(host: str) -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "xmcam-fs" / f"{host}.log"
 
-        sys.exit(f"[{args.host}] DVRIP login failed ({RET_MEANING.get(cam.last_login_ret)}).")
+
+def fetch_recordings(args, creds: Credentials, start: datetime, end: datetime) -> List[Recording]:
+    """Query the camera for recordings in a window (raises :class:`XMCamError` on failure)."""
+    cam = DVRIPClient(args.host, user=creds.username, password=creds.password, port=args.port)
+    cam.login_or_raise()
     try:
         return list_recordings_range(
             cam,
@@ -65,6 +67,20 @@ def _load_recordings(args, creds: Credentials):
         )
     finally:
         cam.close()
+
+
+def _load_recordings(args, creds: Credentials):
+    end = datetime.now()
+    return fetch_recordings(args, creds, end - timedelta(days=args.days), end)
+
+
+def _size_arg(text: str) -> int:
+    from .cache import parse_size
+
+    try:
+        return parse_size(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,7 +98,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user", help="username (or $XMCAM_USER)")
     p.add_argument("--password", help="password (or $XMCAM_PASS)")
     p.add_argument("--cache-dir", dest="cache_dir", help="where to cache downloaded segments")
+    p.add_argument(
+        "--cache-max-size",
+        dest="cache_max_size",
+        default="100M",
+        type=_size_arg,
+        help="soft cap on cached footage; least recently used segments are evicted (default 100M, e.g. 2G, 0 = unlimited)",
+    )
+    p.add_argument(
+        "--refresh",
+        type=float,
+        default=60.0,
+        metavar="SECONDS",
+        help="how often to look for new recordings on the camera (default 60, 0 = never)",
+    )
     p.add_argument("--foreground", action="store_true", help="stay attached (default; Ctrl-C to unmount)")
+    p.add_argument(
+        "-b",
+        "--background",
+        action="store_true",
+        help="detach after mounting and keep running in the background (stop with: fusermount3 -u MOUNTPOINT)",
+    )
+    p.add_argument("--log-file", dest="log_file", help="log file for --background (default ~/.local/state/xmcam-fs/<host>.log)")
     p.add_argument(
         "--progress", action="store_true", help="show live download progress with ETA (when run in a terminal)"
     )
@@ -97,8 +134,11 @@ def main(argv=None) -> None:
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    if args.background and args.foreground:
+        sys.exit("--background and --foreground are mutually exclusive")
 
-    mountpoint = Path(args.mountpoint)
+    # Absolute paths up front: a background process changes its working directory.
+    mountpoint = Path(args.mountpoint).resolve()
     if not mountpoint.is_dir():
         sys.exit(f"mountpoint {mountpoint} does not exist or is not a directory")
 
@@ -108,6 +148,7 @@ def main(argv=None) -> None:
 
     from .cache import SegmentCache
     from .fs import CameraFs
+    from .refresh import Refresher
     from .tree import FsTree
 
     try:
@@ -117,37 +158,77 @@ def main(argv=None) -> None:
     except XMCamError as exc:
         sys.exit(f"Error: {exc}")
 
-    tree = FsTree.from_recordings(recordings)
-    log.info("indexed %d recording(s)", len(recordings))
+    notify = None
+    if args.background:
+        log_file = Path(args.log_file).resolve() if args.log_file else _default_log_file(args.host)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        from .daemon import daemonize
 
-    from .activity import ActivityTracker
+        notify = daemonize()  # the launching process waits in here and exits; we are the daemon now
+        logging.basicConfig(
+            filename=str(log_file),
+            level=logging.DEBUG if args.debug else logging.INFO,
+            format="%(asctime)s %(levelname)s %(message)s",
+            force=True,
+        )
+        log.info("xmcam-fs %s starting in the background (pid %d)", args.host, os.getpid())
 
-    progress_stream = sys.stderr if (args.progress and sys.stderr.isatty()) else None
-    tracker = ActivityTracker(progress_stream)
-
-    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir(args.host)
-    cache = SegmentCache(
-        args.host,
-        creds,
-        cache_dir,
-        port=args.port,
-        channel=args.channel,
-        stream=args.stream,
-        tracker=tracker,
-    )
-
-    fs = CameraFs(tree, cache, tracker=tracker)
-    log.info("status file: cat %s/.status", mountpoint)
-    fuse_options = set(pyfuse3.default_options)
-    fuse_options.add(f"fsname=xmcam-{args.host}")
-    fuse_options.add("ro")
-    if args.debug_fuse:
-        fuse_options.add("debug")
-
-    pyfuse3.init(fs, str(mountpoint), fuse_options)
-    log.info("mounted %s at %s (cache: %s)", args.host, mountpoint, cache_dir)
     try:
-        trio.run(pyfuse3.main)
+        from .activity import ActivityTracker
+
+        progress_stream = sys.stderr if (args.progress and sys.stderr.isatty() and not args.background) else None
+        tracker = ActivityTracker(progress_stream)
+
+        cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else _default_cache_dir(args.host)
+        cache = SegmentCache(
+            args.host,
+            creds,
+            cache_dir,
+            port=args.port,
+            channel=args.channel,
+            stream=args.stream,
+            tracker=tracker,
+            max_bytes=args.cache_max_size,
+        )
+
+        tree = FsTree()
+        refresher = Refresher(
+            tree,
+            lambda start, end: fetch_recordings(args, creds, start, end),
+            cache=cache,
+            interval=args.refresh,
+            days=args.days,
+        )
+        refresher.apply(recordings)  # newest segment is held back until it stops growing
+        log.info("indexed %d recording(s)", len(recordings))
+
+        fs = CameraFs(tree, cache, tracker=tracker, refresher=refresher if args.refresh > 0 else None)
+        log.info("status file: cat %s/.status", mountpoint)
+        fuse_options = set(pyfuse3.default_options)
+        fuse_options.add(f"fsname=xmcam-{args.host}")
+        fuse_options.add("ro")
+        if args.debug_fuse:
+            fuse_options.add("debug")
+
+        pyfuse3.init(fs, str(mountpoint), fuse_options)
+    except BaseException as exc:
+        if notify is not None:
+            log.error("startup failed: %s", exc)
+            notify(f"error: {exc}")
+        raise
+    log.info("mounted %s at %s (cache: %s, limit: %s)", args.host, mountpoint, cache_dir, _fmt_limit(args.cache_max_size))
+    if notify is not None:
+        notify(f"ok: mounted {args.host} at {mountpoint} in the background (pid {os.getpid()}, log: {log_file})")
+
+    async def serve() -> None:
+        async with trio.open_nursery() as nursery:
+            if args.refresh > 0:
+                nursery.start_soon(refresher.run)
+            await pyfuse3.main()
+            nursery.cancel_scope.cancel()
+
+    try:
+        trio.run(serve)
     except KeyboardInterrupt:
         log.info("unmounting...")
     except Exception:
@@ -155,6 +236,12 @@ def main(argv=None) -> None:
         raise
     finally:
         pyfuse3.close()
+
+
+def _fmt_limit(n: int) -> str:
+    from .activity import human_bytes
+
+    return human_bytes(n) if n > 0 else "unlimited"
 
 
 if __name__ == "__main__":

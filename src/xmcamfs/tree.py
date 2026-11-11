@@ -15,8 +15,9 @@ Layout::
           HH.MM.SS-HH.MM.SS.xmraw
 """
 
+import re
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from xmcam.models import Recording
 
@@ -43,6 +44,22 @@ class Node:
     mtime: float = 0.0  # epoch seconds
 
 
+_TOKEN_RE = re.compile(r"\[@([0-9A-Za-z]+)\]")
+
+
+def slot_key(rec: Recording) -> tuple:
+    """Identity of a recording that stays stable while the camera is still writing it.
+
+    The camera's ``FileName`` embeds the segment's *end* time, so it changes while a
+    segment grows (``19.41.55-19.44.10[R][@71db]`` -> ``...-19.44.20[R][@71db]``).
+    The begin time plus the ``[@token]`` do not change, so they identify the
+    segment. Names without a token (older firmware, tests) fall back to the filename.
+    """
+    match = _TOKEN_RE.search(rec.filename or "")
+    ident = match.group(1) if match else rec.filename
+    return (rec.begin_time, ident, rec.channel)
+
+
 def _base_name(rec: Recording) -> str:
     """Return ``HH.MM.SS-HH.MM.SS`` for a recording (without extension).
 
@@ -58,52 +75,32 @@ def _base_name(rec: Recording) -> str:
     return base
 
 
-def _assign_names(recs: List[Recording]) -> List[str]:
-    """Return one basename per recording, disambiguating collisions.
+@dataclass
+class MergeResult:
+    """What :meth:`FsTree.merge` changed."""
 
-    ``recs`` must already be in the desired order. The first occurrence of a
-    basename keeps it unchanged; later occurrences get ``_2``, ``_3``, ...
-    inserted before the extension (the extension is added by the caller).
-    Both view directories use the same basenames, so this is computed once
-    per date.
-    """
-    used = set()
-    counts: Dict[str, int] = {}
-    names: List[str] = []
-    for rec in recs:
-        base = _base_name(rec)
-        n = counts.get(base, 1)
-        name = base
-        while name in used:
-            n += 1
-            name = f"{base}_{n}"
-        counts[base] = n
-        used.add(name)
-        names.append(name)
-    return names
+    added: List[Node] = field(default_factory=list)  # new file nodes
+    updated: List[Tuple[Node, Optional[Recording]]] = field(default_factory=list)  # (node, previous recording)
+
+    def __bool__(self) -> bool:
+        return bool(self.added or self.updated)
 
 
 class FsTree:
-    """Read-only inode tree built from recordings."""
+    """Inode tree built from recordings. Read-only for users; grows via :meth:`merge`."""
 
     def __init__(self) -> None:
         root = Node(inode=ROOT_INODE, name="", kind="root", parent=ROOT_INODE, is_dir=True)
         self._nodes: Dict[int, Node] = {ROOT_INODE: root}
         self._next_inode = ROOT_INODE + 1
+        # slot_key -> {view: file node}; lets merge() update a segment in place.
+        self._slots: Dict[tuple, Dict[str, Node]] = {}
 
     @classmethod
     def from_recordings(cls, recordings: Iterable[Recording]) -> "FsTree":
         """Build the tree. Recordings without ``begin_time`` are skipped."""
         tree = cls()
-        by_date: Dict[str, List[Recording]] = {}
-        for rec in recordings:
-            if rec.begin_time is None:
-                continue
-            date_name = rec.begin_time.strftime("%Y-%m-%d")
-            by_date.setdefault(date_name, []).append(rec)
-        # ISO dates sort chronologically as strings.
-        for date_name in sorted(by_date):
-            tree._add_date(date_name, by_date[date_name])
+        tree.merge(recordings)
         return tree
 
     # ----- construction helpers -------------------------------------------
@@ -119,10 +116,14 @@ class FsTree:
         parent.children[name] = node.inode
         return node
 
-    def _new_file(self, parent: Node, name: str, rec: Recording, view: str) -> Node:
+    @staticmethod
+    def _file_mtime(rec: Recording) -> float:
         # mtime uses end_time (falling back to begin_time). Note: naive
         # datetimes are interpreted as local time by .timestamp().
         when = rec.end_time if rec.end_time is not None else rec.begin_time
+        return when.timestamp()
+
+    def _new_file(self, parent: Node, name: str, rec: Recording, view: str) -> Node:
         node = Node(
             inode=self._alloc_inode(),
             name=name,
@@ -136,21 +137,74 @@ class FsTree:
             # size is only known after conversion. Keep this in mind when
             # the FUSE layer reports st_size.
             size=rec.length_bytes,
-            mtime=when.timestamp(),
+            mtime=self._file_mtime(rec),
         )
         self._nodes[node.inode] = node
         parent.children[name] = node.inode
         return node
 
-    def _add_date(self, date_name: str, recs: List[Recording]) -> None:
+    # ----- incremental update ---------------------------------------------
+
+    def merge(self, recordings: Iterable[Recording]) -> "MergeResult":
+        """Add new recordings and update known ones in place.
+
+        Existing nodes keep their inode and file name (so open handles and kernel
+        caches stay valid); a known segment (same :func:`slot_key`) only gets its
+        recording, size and mtime refreshed. Unknown segments become new files,
+        creating the date directory when needed. Recordings without
+        ``begin_time`` are skipped. Nothing is ever removed.
+        """
+        result = MergeResult()
+        fresh: Dict[str, List[Recording]] = {}
+        for rec in sorted((r for r in recordings if r.begin_time is not None), key=lambda r: (r.begin_time, r.filename)):
+            slot = self._slots.get(slot_key(rec))
+            if slot is not None:
+                self._update_slot(slot, rec, result)
+            else:
+                fresh.setdefault(rec.begin_time.strftime("%Y-%m-%d"), []).append(rec)
+        for date_name in sorted(fresh):  # ISO dates sort chronologically as strings
+            self._add_recordings(date_name, fresh[date_name], result)
+        return result
+
+    def _update_slot(self, slot: Dict[str, Node], rec: Recording, result: "MergeResult") -> None:
+        for node in slot.values():
+            old = node.recording
+            if (
+                old is not None
+                and old.filename == rec.filename
+                and old.end_time == rec.end_time
+                and old.length_bytes == rec.length_bytes
+            ):
+                continue
+            node.recording = rec
+            node.size = rec.length_bytes
+            node.mtime = self._file_mtime(rec)
+            result.updated.append((node, old))
+
+    def _add_recordings(self, date_name: str, recs: List[Recording], result: "MergeResult") -> None:
         root = self._nodes[ROOT_INODE]
-        date_node = self._new_dir(root, date_name, "date")
-        ordered = sorted(recs, key=lambda r: (r.begin_time, r.filename))
-        names = _assign_names(ordered)
+        date_id = root.children.get(date_name)
+        date_node = self._nodes[date_id] if date_id is not None else self._new_dir(root, date_name, "date")
+        mp4_id = date_node.children.get(VIEW_MP4)
+        used = set(self._nodes[mp4_id].children) if mp4_id is not None else set()  # views share basenames
+        names: List[str] = []
+        for rec in recs:
+            base = _base_name(rec)
+            name, n = base, 1
+            while name + _EXTENSIONS[VIEW_MP4] in used:
+                n += 1
+                name = f"{base}_{n}"
+            used.add(name + _EXTENSIONS[VIEW_MP4])
+            names.append(name)
+        slots = [{} for _ in recs]  # type: List[Dict[str, Node]]
         for view in VIEWS:
-            view_node = self._new_dir(date_node, view, "view", view=view)
-            for rec, base in zip(ordered, names):
-                self._new_file(view_node, base + _EXTENSIONS[view], rec, view)
+            view_id = date_node.children.get(view)
+            view_node = self._nodes[view_id] if view_id is not None else self._new_dir(date_node, view, "view", view=view)
+            for rec, name, slot in zip(recs, names, slots):
+                slot[view] = self._new_file(view_node, name + _EXTENSIONS[view], rec, view)
+                result.added.append(slot[view])
+        for rec, slot in zip(recs, slots):
+            self._slots[slot_key(rec)] = slot
 
     # ----- public read API ------------------------------------------------
 

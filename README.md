@@ -83,9 +83,41 @@ xmcam-fs 192.0.2.10 ./mnt --days 3 --foreground
 # With explicit credentials and the smaller sub-stream
 XMCAM_USER=... XMCAM_PASS=... xmcam-fs 192.0.2.10 ./mnt --stream Sub
 
-# Unmount
+# Detach and keep running in the background (returns once the mount is up)
+xmcam-fs 192.0.2.10 ./mnt --background
+
+# Unmount (also stops a background instance)
 fusermount3 -u ./mnt
 ```
+
+### Live updates
+
+The mount follows the camera: every `--refresh` seconds (default 60; `0` = never)
+new recordings are added to the tree, so `ls` shows footage as it is recorded —
+no remount needed. The segment the camera is *currently writing* is held back
+until it is finished (otherwise a half-written copy would be cached), so a new
+file appears when its segment closes — at the latest about one refresh after a
+5-minute segment ends, sooner when motion or a new segment closes the previous one.
+
+The camera often drops queries while a download is running, so refreshes are
+skipped during downloads and run right after they finish.
+
+### Background mode
+
+`--background` (`-b`) detaches after the mount is up; errors during start-up
+(wrong credentials, FUSE problems) still show in your terminal. The daemon logs to
+`--log-file` (default `~/.local/state/xmcam-fs/<camera-ip>.log`). Stop it with
+`fusermount3 -u ./mnt`.
+
+### Cache size limit
+
+Downloaded and converted segments are cached on disk. `--cache-max-size` caps
+that cache (default **100M**; `2G`, `500M`, … or `0` for unlimited): when it is
+exceeded the least recently used segments are deleted and simply fetched again
+on next access. The limit is soft — the segment just produced and anything used
+in the last 30 s are never evicted, so one segment larger than the limit still
+works. A 5-minute segment is roughly 45 MB, so raise the limit if you want to
+keep more than a couple of them.
 
 ### Monitoring access and downloads
 
@@ -116,7 +148,8 @@ with ETA to stderr as each segment downloads.
 
 Options: `--days N` (how many past days to index, default 7), `--stream Main|Sub`,
 `--channel N`, `--cache-dir PATH` (default under `$XDG_CACHE_HOME`),
-`--user/--password`, `--foreground`, `--debug`.
+`--cache-max-size SIZE` (default 100M), `--refresh SECONDS` (default 60),
+`-b/--background`, `--log-file PATH`, `--user/--password`, `--foreground`, `--debug`.
 
 ## How it works
 
@@ -127,8 +160,10 @@ download (DVRIP `OPPlayBack`) in a worker thread; for the `mp4/` view the
 Xiongmai container is demuxed and remuxed to MP4. Results are cached on disk, so
 re-opening is instant.
 
-> The recording list is a snapshot taken at mount time. Remount to pick up
-> newer footage. (Live refresh is planned.)
+The recording list is refreshed in the background (see *Live updates*), so a
+long-running mount keeps up with the camera. Recordings the camera has since
+overwritten are not removed from the listing yet; opening one fails with an I/O
+error. Remount to drop them.
 
 ## Security & ethics
 

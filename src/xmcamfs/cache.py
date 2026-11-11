@@ -8,7 +8,11 @@ two ``OPPlayBack`` sessions at once provokes ``Ret 103``.
 
 from __future__ import annotations
 
+import logging
+import os
+import re
 import threading
+import time
 from pathlib import Path
 
 from xmcam.dvrip import DVRIPClient
@@ -16,6 +20,23 @@ from xmcam.exceptions import XMCamError
 from xmcam.media import convert_raw, have_ffmpeg
 from xmcam.models import Credentials, Recording
 from xmcam.playback import download_recording
+
+
+log = logging.getLogger("xmcamfs")
+
+#: Cache files used less than this long ago are never evicted (they may be about to be opened).
+EVICT_GRACE = 30.0
+
+_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?)b?\s*$", re.IGNORECASE)
+
+
+def parse_size(text: str) -> int:
+    """Parse ``100M`` / ``2G`` / ``512k`` / ``123456`` into bytes (``0`` = unlimited)."""
+    match = _SIZE_RE.match(str(text))
+    if not match:
+        raise ValueError(f"invalid size {text!r} (examples: 100M, 2G, 0 for unlimited)")
+    number, unit = match.groups()
+    return int(float(number) * 1024 ** ("bkmgt".index(unit.lower() or "b")))
 
 
 def _safe_stem(rec: Recording) -> str:
@@ -46,6 +67,7 @@ class SegmentCache:
         channel: int = 0,
         stream: str = "Main",
         tracker=None,
+        max_bytes: int = 0,
     ) -> None:
         self.host = host
         self.creds = credentials
@@ -55,6 +77,7 @@ class SegmentCache:
         self.stream = stream
         self.tracker = tracker  # optional ActivityTracker for progress/ETA
         self._download_lock = threading.Lock()  # one playback channel per camera
+        self.max_bytes = max_bytes  # soft cap on cached footage; 0 = unlimited
 
         for sub in ("raw", "mp4", ".tmp"):
             (self.cache_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -67,18 +90,22 @@ class SegmentCache:
             return self.cache_dir / "raw" / f"{stem}.xmraw"
         return self.cache_dir / "mp4" / f"{stem}.mp4"
 
+    def is_busy(self) -> bool:
+        """True while a segment is being downloaded/converted."""
+        return self._download_lock.locked()
+
     def ensure(self, rec: Recording, view: str, display: str = "") -> Path:
         """Return the cache path, downloading/converting once if needed (BLOCKING).
 
         *display* is the user-facing name reported in progress/status output.
         """
         dest = self.path_for(rec, view)
-        if dest.exists() and dest.stat().st_size > 0:
+        if self._touch_if_cached(dest):
             return dest
 
         with self._download_lock:
             # Re-check: another thread may have produced it while we waited.
-            if dest.exists() and dest.stat().st_size > 0:
+            if self._touch_if_cached(dest):
                 return dest
             key = str(dest)
             progress = None
@@ -93,7 +120,65 @@ class SegmentCache:
             finally:
                 if self.tracker is not None:
                     self.tracker.finish(key)
+            self.evict(keep=dest)
         return dest
+
+    # -- size limit -----------------------------------------------------------
+    @staticmethod
+    def _touch_if_cached(dest: Path) -> bool:
+        """True if *dest* is a non-empty cached file; marks it as just used (LRU)."""
+        try:
+            if dest.stat().st_size <= 0:
+                return False
+            os.utime(dest)
+            return True
+        except OSError:
+            return False
+
+    def usage(self) -> int:
+        """Total bytes of cached segments (temporary files not counted)."""
+        total = 0
+        for sub in ("raw", "mp4"):
+            for f in (self.cache_dir / sub).iterdir():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+        return total
+
+    def evict(self, keep: Path = None) -> int:
+        """Delete least-recently-used segments until under ``max_bytes``; returns bytes freed.
+
+        The limit is soft: *keep* and anything used within :data:`EVICT_GRACE`
+        seconds survive, so a single segment bigger than the limit still works.
+        A reader that already has a file open keeps reading it after unlink.
+        """
+        if self.max_bytes <= 0:
+            return 0
+        files = []
+        for sub in ("raw", "mp4"):
+            for f in (self.cache_dir / sub).iterdir():
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                files.append((st.st_mtime, st.st_size, f))
+        total = sum(size for _, size, _ in files)
+        freed = 0
+        now = time.time()
+        for mtime, size, f in sorted(files):
+            if total <= self.max_bytes:
+                break
+            if f == keep or now - mtime < EVICT_GRACE or f.name.endswith(".part"):
+                continue
+            try:
+                f.unlink()
+            except OSError:
+                continue
+            log.info("cache over limit: evicted %s (%d bytes)", f.name, size)
+            total -= size
+            freed += size
+        return freed
 
     # -- internals ------------------------------------------------------------
     def _client(self) -> DVRIPClient:
